@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>American Sign Language (ASL) Detector — Real-Time Sign Language Recognition</title>
+    <meta name="description" content="Real-time American Sign Language detection powered by MediaPipe and TensorFlow">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&family=Outfit:wght@600;700;800&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body>
+
+    <!-- ─── Header ───────────────────────────────────── -->
+    <header class="header">
+        <div class="header__brand">
+            <div class="header__logo">🤟</div>
+            <div>
+                <div class="header__title">American Sign Language (ASL) Detector</div>
+                <div class="header__sub">Real-Time Sign Language Recognition</div>
+            </div>
+        </div>
+        <div class="header__status">
+            <span class="status-dot" id="statusDot"></span>
+            <span id="statusText">Disconnected</span>
+        </div>
+    </header>
+
+    <!-- ─── Main Content ─────────────────────────────── -->
+    <main class="main">
+        <!-- Video Section -->
+        <section class="video-section">
+
+            <!-- Live Webcam -->
+            <div class="video-container" id="videoContainer">
+                <video id="webcam" autoplay playsinline muted></video>
+                <canvas id="overlay"></canvas>
+
+                <div class="video-badge">
+                    <span class="rec-dot"></span>
+                    LIVE
+                </div>
+                <div class="fps-badge" id="fpsBadge">-- FPS</div>
+
+                <!-- Big detected letter overlay -->
+                <div class="detection-overlay" id="detOverlay" style="display:none;">
+                    <div class="det-letter" id="detLetter">A</div>
+                    <div class="det-confidence" id="detConf">98.5%</div>
+                </div>
+
+                <!-- Loading overlay -->
+                <div class="loading-overlay" id="loadingOverlay">
+                    <div class="spinner"></div>
+                    <div class="loading-text" id="loadingText">Initializing camera...</div>
+                </div>
+            </div>
+
+            <!-- Reference Image Below Webcam (Shrunk) -->
+            <div class="reference-wrapper"
+                style="margin-top: 10px; border-radius: var(--radius-lg); overflow: hidden; background: var(--bg-secondary); border: 1px solid var(--border-glass); padding: 12px; width: 100%; max-width: 400px; margin-left: auto; margin-right: auto;">
+                <h3
+                    style="font-family: var(--font-display); font-size: 0.9rem; color: var(--text-primary); margin-bottom: 8px; text-align: center;">
+                    Reference Image for Sign Language</h3>
+                <img src="/static/asl_reference.png" alt="ASL Sign Reference"
+                    style="width: 100%; height: auto; border-radius: var(--radius-sm); object-fit: contain;">
+            </div>
+            <!-- Controls -->
+            <div class="controls">
+                <button class="btn btn--primary" id="btnStart" onclick="startDetection()">
+                    ▶ Start Detection
+                </button>
+                <button class="btn btn--danger" id="btnStop" onclick="stopDetection()" style="display:none;">
+                    ⏹ Stop
+                </button>
+                <button class="btn btn--secondary" onclick="addSpace()">
+                    ␣ Space
+                </button>
+                <button class="btn btn--secondary" onclick="clearSentence()">
+                    ✕ Clear
+                </button>
+            </div>
+        </section>
+
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <!-- Current Detection Card -->
+            <div class="card">
+                <div class="card__hdr">
+                    <div class="card__icon card__icon--purple">🎯</div>
+                    <div class="card__title">Detection</div>
+                </div>
+                <div class="r-row">
+                    <span class="r-lbl">Detected Letter</span>
+                    <span class="r-val r-val--accent" id="sidebarLetter">—</span>
+                </div>
+                <div class="r-row">
+                    <span class="r-lbl">Hand</span>
+                    <span class="r-val" id="sidebarHand">—</span>
+                </div>
+                <div class="r-row">
+                    <span class="r-lbl">Confidence</span>
+                    <span class="r-val r-val--success" id="sidebarConf">—</span>
+                </div>
+                <div class="r-row">
+                    <span class="r-lbl">Hands Detected</span>
+                    <span class="r-val" id="sidebarHands">0</span>
+                </div>
+            </div>
+
+            <!-- Sentence Builder -->
+            <div class="card">
+                <div class="card__hdr">
+                    <div class="card__icon card__icon--green">💬</div>
+                    <div class="card__title">Sentence Builder</div>
+                </div>
+                <div class="sentence-box" id="sentenceBox">
+                    <span id="sentenceText"></span><span class="sentence-cursor"></span>
+                </div>
+                <div style="margin-top:8px; font-size:.72rem; color:var(--text-muted);">
+                    Hold a sign steady for 1.5s to add a letter. Press Space to add gaps.
+                </div>
+            </div>
+
+            <!-- ASL Alphabet Reference -->
+            <div class="card">
+                <div class="card__hdr">
+                    <div class="card__icon card__icon--yellow">📖</div>
+                    <div class="card__title">ASL Alphabet (A–Z)</div>
+                </div>
+                <div class="asl-grid" id="aslGrid"></div>
+            </div>
+
+        </aside>
+    </main>
+
+    <script>
+        // ─── State ──────────────────────────────────────────
+        let ws = null;
+        let isRunning = false;
+        let animFrameId = null;
+        let lastLetter = "";
+        let letterStartTime = 0;
+        let lastAddedLetter = ""; // Prevents spamming the same letter
+        const HOLD_MS = 1500; // hold letter 1.5s to add to sentence
+        let sentence = "";
+        let frameCount = 0;
+        let fpsTime = Date.now();
+
+        // ─── DOM Refs ───────────────────────────────────────
+        const video = document.getElementById("webcam");
+        const canvas = document.getElementById("overlay");
+        const ctx = canvas.getContext("2d");
+        const loading = document.getElementById("loadingOverlay");
+        const loadText = document.getElementById("loadingText");
+        const statusDot = document.getElementById("statusDot");
+        const statusTxt = document.getElementById("statusText");
+        const detOverlay = document.getElementById("detOverlay");
+        const detLetter = document.getElementById("detLetter");
+        const detConf = document.getElementById("detConf");
+        const fpsBadge = document.getElementById("fpsBadge");
+        const btnStart = document.getElementById("btnStart");
+        const btnStop = document.getElementById("btnStop");
+
+        // ─── ASL Grid ───────────────────────────────────────
+        const grid = document.getElementById("aslGrid");
+        for (let i = 0; i < 26; i++) {
+            const letter = String.fromCharCode(65 + i);
+            const el = document.createElement("div");
+            el.className = "asl-item";
+            el.id = "asl-" + letter;
+            el.textContent = letter;
+            grid.appendChild(el);
+        }
+
+        // ─── Start Camera ───────────────────────────────────
+        async function initCamera() {
+            // getUserMedia requires HTTPS or exact "localhost" URL
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                // Show helpful error with correct URL
+                const correctUrl = "http://localhost:8000";
+                loadText.innerHTML = '❌ Camera requires <b>localhost</b> URL.<br><a href="' + correctUrl + '" style="color:#a78bfa;">Click here: ' + correctUrl + '</a>';
+                console.error("getUserMedia not available. Use http://localhost:8000 (not 127.0.0.1 or 0.0.0.0)");
+                return false;
+            }
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } }
+                });
+                video.srcObject = stream;
+                await video.play();
+                canvas.width = video.videoWidth || 640;
+                canvas.height = video.videoHeight || 480;
+                loading.classList.add("hidden");
+                return true;
+            } catch (e) {
+                loadText.textContent = "❌ Camera access denied. Please allow camera permission.";
+                console.error("Camera error:", e);
+                return false;
+            }
+        }
+
+        // ─── WebSocket ──────────────────────────────────────
+        let isWaitingForServer = false; // Prevents sending frames faster than the backend can process
+
+        function connectWS() {
+            const proto = location.protocol === "https:" ? "wss:" : "ws:";
+            ws = new WebSocket(`${proto}//${location.host}/ws`);
+
+            ws.onopen = () => {
+                statusDot.className = "status-dot active";
+                statusTxt.textContent = "Connected";
+            };
+
+            ws.onmessage = (event) => {
+                isWaitingForServer = false; // Server finished processing, unlock next frame
+                const data = JSON.parse(event.data);
+                handleDetection(data);
+            };
+
+            ws.onclose = () => {
+                statusDot.className = "status-dot";
+                statusTxt.textContent = "Disconnected";
+                if (isRunning) setTimeout(connectWS, 1000);
+            };
+
+            ws.onerror = () => {
+                statusDot.className = "status-dot error";
+                statusTxt.textContent = "Connection error";
+            };
+        }
+
+        // ─── Send Frame ─────────────────────────────────────
+        // Reuse a single offscreen canvas for extreme performance
+        const tempCanvas = document.createElement("canvas");
+        tempCanvas.width = 320;  // send smaller frames for speed
+        tempCanvas.height = 240;
+        const tempCtx = tempCanvas.getContext("2d");
+
+        function sendFrame() {
+            // Always schedule the next check so the loop never dies
+            if (isRunning) {
+                animFrameId = requestAnimationFrame(sendFrame);
+            }
+
+            if (!isRunning || !ws || ws.readyState !== WebSocket.OPEN) return;
+
+            // If the backend is still processing the last frame, drop this one!
+            // This prevents the WebSocket queue from backing up and causing a 3-second delay.
+            if (isWaitingForServer) return;
+
+            isWaitingForServer = true; // Lock until we get a reply
+
+            tempCtx.drawImage(video, 0, 0, 320, 240);
+            const dataUrl = tempCanvas.toDataURL("image/jpeg", 0.5); // Lower quality = much faster network
+
+            ws.send(JSON.stringify({ frame: dataUrl }));
+
+            // FPS counter
+            frameCount++;
+            const now = Date.now();
+            if (now - fpsTime >= 1000) {
+                fpsBadge.textContent = frameCount + " FPS";
+                frameCount = 0;
+                fpsTime = now;
+            }
+        }
+
+        // ─── Handle Detection Results ───────────────────────
+        function handleDetection(data) {
+            const dets = data.detections || [];
+            document.getElementById("sidebarHands").textContent = data.hands_detected;
+
+            // Clear canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            if (dets.length === 0) {
+                detOverlay.style.display = "none";
+                document.getElementById("sidebarLetter").textContent = "—";
+                document.getElementById("sidebarHand").textContent = "—";
+                document.getElementById("sidebarConf").textContent = "—";
+                // Reset hold timer and last added letter
+                lastLetter = "";
+                lastAddedLetter = "";
+                clearHighlight();
+                return;
+            }
+
+            const det = dets[0]; // primary hand
+
+            // Show detection
+            detOverlay.style.display = "block";
+            detLetter.textContent = det.letter;
+            detConf.textContent = det.confidence + "%";
+
+            // Sidebar
+            document.getElementById("sidebarLetter").textContent = det.letter;
+            document.getElementById("sidebarHand").textContent = det.hand;
+            document.getElementById("sidebarConf").textContent = det.confidence + "%";
+
+            // Animate
+            detLetter.classList.remove("pop");
+            void detLetter.offsetWidth;
+            detLetter.classList.add("pop");
+
+            // Highlight ASL grid
+            highlightLetter(det.letter);
+
+            // Draw landmarks on canvas
+            drawLandmarks(det.landmarks);
+
+            // Sentence builder — hold same letter for HOLD_MS
+            if (det.letter === lastLetter) {
+                if (Date.now() - letterStartTime >= HOLD_MS) {
+                    if (det.letter !== lastAddedLetter) {
+                        sentence += det.letter;
+                        document.getElementById("sentenceText").textContent = sentence;
+                        lastAddedLetter = det.letter;
+                    }
+                    // Reset timer to avoid immediate re-trigger
+                    letterStartTime = Date.now();
+                }
+            } else {
+                lastLetter = det.letter;
+                letterStartTime = Date.now();
+            }
+        }
+
+        // ─── Draw Hand Landmarks ────────────────────────────
+        const HAND_CONNECTIONS = [
+            [0, 1], [1, 2], [2, 3], [3, 4],       // thumb
+            [0, 5], [5, 6], [6, 7], [7, 8],       // index
+            [5, 9], [9, 10], [10, 11], [11, 12],   // middle
+            [9, 13], [13, 14], [14, 15], [15, 16], // ring
+            [13, 17], [17, 18], [18, 19], [19, 20],// pinky
+            [0, 17]                          // palm base
+        ];
+
+        function drawLandmarks(landmarks) {
+            if (!landmarks || landmarks.length === 0) return;
+
+            const w = canvas.width;
+            const h = canvas.height;
+
+            // Draw connections (Black outline first, then White inner line)
+
+            // 1. Black Outline (thickness 6)
+            ctx.strokeStyle = "#000000";
+            ctx.lineWidth = 6;
+            for (const [i, j] of HAND_CONNECTIONS) {
+                const a = landmarks[i];
+                const b = landmarks[j];
+                ctx.beginPath();
+                ctx.moveTo(a.x * w, a.y * h);
+                ctx.lineTo(b.x * w, b.y * h);
+                ctx.stroke();
+            }
+
+            // 2. White Inner Line (thickness 2)
+            ctx.strokeStyle = "#FFFFFF";
+            ctx.lineWidth = 2;
+            for (const [i, j] of HAND_CONNECTIONS) {
+                const a = landmarks[i];
+                const b = landmarks[j];
+                ctx.beginPath();
+                ctx.moveTo(a.x * w, a.y * h);
+                ctx.lineTo(b.x * w, b.y * h);
+                ctx.stroke();
+            }
+
+            // Draw points (Black outer circle, White inner circle)
+            for (let i = 0; i < landmarks.length; i++) {
+                const lm = landmarks[i];
+                const x = lm.x * w;
+                const y = lm.y * h;
+
+                // Black Outer Dot (matches cv.circle radius 5, but filled here)
+                ctx.beginPath();
+                ctx.arc(x, y, 5, 0, Math.PI * 2);
+                ctx.fillStyle = "#000000";
+                ctx.fill();
+
+                // White/Gray Inner Dot (matches app.py style)
+                ctx.beginPath();
+                // app.py has specific colors for specific joints, but mostly white/light gray
+                // We'll use white for all joints to match the line aesthetic
+                ctx.arc(x, y, 3, 0, Math.PI * 2);
+                ctx.fillStyle = "#FFFFFF";
+                ctx.fill();
+            }
+        }
+
+        // ─── Highlight Active Letter ────────────────────────
+        let currentHighlight = null;
+        function highlightLetter(letter) {
+            clearHighlight();
+            const el = document.getElementById("asl-" + letter);
+            if (el) { el.classList.add("highlight"); currentHighlight = el; }
+        }
+        function clearHighlight() {
+            if (currentHighlight) { currentHighlight.classList.remove("highlight"); currentHighlight = null; }
+        }
+
+        // ─── Button Actions ─────────────────────────────────
+        async function startDetection() {
+            const camOk = await initCamera();
+            if (!camOk) return;
+
+            isRunning = true;
+            btnStart.style.display = "none";
+            btnStop.style.display = "flex";
+            connectWS();
+
+            // Small delay to let WS connect
+            setTimeout(sendFrame, 500);
+        }
+
+        function stopDetection() {
+            isRunning = false;
+            if (animFrameId) cancelAnimationFrame(animFrameId);
+            if (ws) ws.close();
+            btnStart.style.display = "flex";
+            btnStop.style.display = "none";
+            detOverlay.style.display = "none";
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            clearHighlight();
+        }
+
+        function addSpace() { sentence += " "; document.getElementById("sentenceText").textContent = sentence; }
+        function clearSentence() { sentence = ""; document.getElementById("sentenceText").textContent = ""; }
+    </script>
+
+</body>
+
+</html>

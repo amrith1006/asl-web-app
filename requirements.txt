@@ -1,9 +1,12 @@
-opencv-python
+opencv-python-headless
 mediapipe
 tensorflow==2.16.1
 Pillow
 numpy
 pandas
-seaborn
 scikit-learn
-matplotlib
+fastapi
+uvicorn
+jinja2
+python-multipart
+websockets
