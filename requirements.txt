@@ -1,6 +1,6 @@
 opencv-python-headless
 mediapipe
-tensorflow==2.16.1
+tensorflow
 Pillow
 numpy
 pandas
